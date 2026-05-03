@@ -1,1 +1,1 @@
-"""DIY Website Tracker package."""
+"""DIY Job Tracker package."""

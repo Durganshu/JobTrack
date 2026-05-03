@@ -29,7 +29,11 @@ def load_companies(path: str) -> dict[str, str]:
         print(f"ERROR: companies config file not found: {path}", file=sys.stderr)
         sys.exit(1)
     with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError as exc:
+            print(f"ERROR: companies config file is not valid JSON: {exc}", file=sys.stderr)
+            sys.exit(1)
     if not isinstance(data, dict):
         print("ERROR: companies.json must be a JSON object mapping company names to URLs.",
               file=sys.stderr)

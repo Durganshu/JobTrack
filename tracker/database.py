@@ -11,9 +11,9 @@ The archive has the structure:
 }
 """
 
+import copy
 import json
 import os
-from typing import Optional
 
 DEFAULT_ARCHIVE_PATH = "jobs_archive.json"
 
@@ -53,7 +53,7 @@ class DatabaseManager:
 
     def get_archived_jobs(self, company: str) -> dict[str, dict]:
         """Return the archived job map ``{hash: job_dict}`` for *company*."""
-        return dict(self._data.get(company, {}))
+        return copy.deepcopy(self._data.get(company, {}))
 
     def update_company(self, company: str, jobs: list[dict]) -> None:
         """

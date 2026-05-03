@@ -6,7 +6,7 @@ for JavaScript-rendered pages and BeautifulSoup4 for HTML parsing.
 import hashlib
 import re
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -25,6 +25,14 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
 
     Looks for <a> tags (or their parents) whose text contains common job-title
     keywords.  Returns a list of dicts with keys: title, link, hash.
+
+    Parameters
+    ----------
+    company  : Company name (used in hashing).
+    html     : Raw HTML string to parse.
+    base_url : Fully-qualified page URL (must include scheme, e.g.
+               ``https://...``) used to resolve relative hrefs via
+               ``urllib.parse.urljoin``.
     """
     soup = BeautifulSoup(html, "html.parser")
     seen: set[str] = set()
@@ -40,22 +48,12 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
         link = ""
         if tag.name == "a" and tag.get("href"):
             href = tag["href"].strip()
-            if href.startswith("http"):
-                link = href
-            elif href.startswith("/"):
-                parsed = urlparse(base_url)
-                link = f"{parsed.scheme}://{parsed.netloc}{href}"
-            else:
-                link = href
+            link = urljoin(base_url, href)
         else:
             anchor = tag.find("a", href=True)
             if anchor:
                 href = anchor["href"].strip()
-                if href.startswith("http"):
-                    link = href
-                elif href.startswith("/"):
-                    parsed = urlparse(base_url)
-                    link = f"{parsed.scheme}://{parsed.netloc}{href}"
+                link = urljoin(base_url, href)
 
         job_hash = _compute_hash(company, text, link)
         if job_hash in seen:
@@ -76,23 +74,20 @@ def _compute_hash(company: str, title: str, link: str) -> str:
 async def _fetch_html_playwright(url: str, timeout_ms: int = 30_000) -> str:
     """
     Use a headless Chromium browser via Playwright to load the page and
-    return the fully-rendered HTML.  Falls back to an empty string on error.
+    return the fully-rendered HTML.  Raises on any Playwright error so
+    callers can skip archive updates on fetch failures.
     """
-    try:
-        from playwright.async_api import async_playwright
+    from playwright.async_api import async_playwright
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            try:
-                page = await browser.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-                html = await page.content()
-            finally:
-                await browser.close()
-        return html
-    except Exception as exc:
-        print(f"  [scraper] Playwright error for {url}: {exc}")
-        return ""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            html = await page.content()
+        finally:
+            await browser.close()
+    return html
 
 
 async def fetch_jobs(
