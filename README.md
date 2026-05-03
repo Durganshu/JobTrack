@@ -22,14 +22,14 @@ DIY-Website-Tracker/
 ├── companies.json          # Your target companies and their career-page URLs
 ├── jobs_archive.json       # Auto-generated; stores last-seen job state
 ├── main.py                 # Entry point
-├── requirements.txt
+├── pyproject.toml
 ├── tracker/
 │   ├── __init__.py
 │   ├── scraper.py          # Playwright + BeautifulSoup4 scraper
 │   ├── database.py         # JSON persistence layer
 │   └── reporter.py         # Console output formatter
 └── tests/
-    └── test_tracker.py     # Unit tests (29 tests, no network required)
+    └── test_tracker.py     # Unit tests (30 tests, no network required)
 ```
 
 ---
@@ -39,7 +39,7 @@ DIY-Website-Tracker/
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install ".[dev]"
 playwright install chromium
 ```
 
@@ -103,7 +103,7 @@ Create a daily trigger that runs `python main.py` from the project directory.
 pytest tests/ -v
 ```
 
-All 29 tests run entirely offline (no browser, no network) using an HTML override fixture.
+All 30 tests run entirely offline (no browser, no network) using an HTML override fixture.
 
 ---
 
