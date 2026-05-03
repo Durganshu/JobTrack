@@ -356,6 +356,65 @@ async def _fetch_html_playwright(url: str, timeout_ms: int = 30_000) -> str:
     return html
 
 
+async def _fetch_jobs_from_iframe_boards(
+    company: str,
+    url: str,
+    timeout_ms: int = 30_000,
+) -> Optional[list[dict]]:
+    """
+    Fetch jobs from embedded iframe job boards (e.g., Personio) when the
+    top-level page itself does not contain listing anchors.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            page = await browser.new_page()
+            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+            await page.wait_for_timeout(1200)
+
+            all_by_link: dict[str, dict] = {}
+
+            for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
+
+                frame_url = frame.url or ""
+                if not frame_url or frame_url == "about:blank":
+                    continue
+
+                # Prioritize known ATS providers and job-like frame URLs.
+                if not re.search(
+                    r"(personio|jobs\.|jobboard|careers?|stellen|karriere|posting|pinpoint)",
+                    frame_url,
+                    re.IGNORECASE,
+                ):
+                    continue
+
+                try:
+                    frame_html = await frame.content()
+                except Exception:
+                    continue
+
+                if not frame_html:
+                    continue
+
+                jobs = _extract_jobs_from_html(company, frame_html, frame_url)
+                for job in jobs:
+                    existing = all_by_link.get(job["link"])
+                    if existing and len(existing["title"]) >= len(job["title"]):
+                        continue
+                    all_by_link[job["link"]] = job
+
+            if all_by_link:
+                return list(all_by_link.values())
+
+            return None
+        finally:
+            await browser.close()
+
+
 async def fetch_jobs(
     company: str,
     url: str,
@@ -383,6 +442,11 @@ async def fetch_jobs(
         jobs_from_api = await _fetch_jobs_typesense_if_available(company, url, timeout_ms)
         if jobs_from_api:
             return jobs_from_api
+
+        jobs_from_iframes = await _fetch_jobs_from_iframe_boards(company, url, timeout_ms)
+        if jobs_from_iframes:
+            return jobs_from_iframes
+
         html = await _fetch_html_playwright(url, timeout_ms)
 
     if not html:
