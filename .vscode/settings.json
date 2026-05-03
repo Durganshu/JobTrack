@@ -1,0 +1,6 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "pytest": true,
+        "/home/diogenes/projects/DIY-Website-Tracker/.venv/bin/python": true
+    }
+}

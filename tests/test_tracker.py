@@ -68,7 +68,7 @@ SAMPLE_HTML = """
 
 
 class TestExtractJobsFromHtml:
-    def test_extracts_keyword_matching_entries(self):
+    def test_extracts_job_links(self):
         jobs = _extract_jobs_from_html("ACME", SAMPLE_HTML, "https://acme.com")
         titles = [j["title"] for j in jobs]
         assert any("Engineer" in t for t in titles)
@@ -109,6 +109,20 @@ class TestExtractJobsFromHtml:
     def test_empty_html_returns_empty(self):
         jobs = _extract_jobs_from_html("ACME", "", "https://acme.com")
         assert jobs == []
+
+    def test_non_job_navigation_link_excluded(self):
+        html = '<a href="/careers">Careers</a>'
+        jobs = _extract_jobs_from_html("ACME", html, "https://acme.com")
+        assert jobs == []
+
+    def test_prefers_longer_title_for_same_link(self):
+        html = """
+        <a href="/jobs/42">Data Analyst</a>
+        <a href="/jobs/42">Senior Data Analyst (m/f/d) Berlin</a>
+        """
+        jobs = _extract_jobs_from_html("ACME", html, "https://acme.com")
+        assert len(jobs) == 1
+        assert jobs[0]["title"] == "Senior Data Analyst (m/f/d) Berlin"
 
 
 # ---------------------------------------------------------------------------

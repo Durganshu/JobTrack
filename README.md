@@ -36,14 +36,21 @@ DIY-Website-Tracker/
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Create and activate a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+```
+
+### 2. Install dependencies
 
 ```bash
 pip install ".[dev]"
 playwright install chromium
 ```
 
-### 2. Configure target companies
+### 3. Configure target companies
 
 Edit `companies.json`:
 
@@ -55,7 +62,7 @@ Edit `companies.json`:
 }
 ```
 
-### 3. Run the tracker
+### 4. Run the tracker
 
 ```bash
 python main.py
@@ -72,15 +79,20 @@ Optional flags:
 python main.py --companies my_companies.json --archive my_archive.json
 ```
 
-### 4. Schedule daily runs
+### 5. Schedule daily runs
 
 **Linux / macOS (cron):**
 ```cron
-0 8 * * * cd /path/to/DIY-Website-Tracker && python main.py >> tracker.log 2>&1
+0 8 * * * cd /path/to/DIY-Website-Tracker && source .venv/bin/activate && python main.py >> tracker.log 2>&1
 ```
 
 **Windows (Task Scheduler):**  
-Create a daily trigger that runs `python main.py` from the project directory.
+Create a daily trigger that runs the following batch script from the project directory:
+```batch
+cd /d C:\path\to\DIY-Website-Tracker
+.venv\Scripts\activate.bat
+python main.py >> tracker.log 2>&1
+```
 
 ---
 
@@ -98,6 +110,8 @@ Create a daily trigger that runs `python main.py` from the project directory.
 ---
 
 ## Running Tests
+
+Make sure the virtual environment is activated, then run:
 
 ```bash
 pytest tests/ -v
