@@ -14,7 +14,8 @@ from bs4 import BeautifulSoup
 
 JOB_LINK_HINTS = re.compile(
     r"(job|jobs|position|opening|vacan|requisition|reqid|stellen|karriere|"
-    r"angebot|offer|personio|workdayjobs|greenhouse|lever|smartrecruiters|ashby)",
+    r"angebot|offer|personio|workdayjobs|greenhouse|lever|smartrecruiters|ashby|"
+    r"posting|postings|pinpoint|pinpointhq)",
     re.IGNORECASE,
 )
 
@@ -29,10 +30,68 @@ NON_JOB_TITLES = {
     "search jobs",
 }
 
+GENERIC_CTA_TITLES = {
+    "view job",
+    "apply",
+    "apply now",
+    "learn more",
+    "details",
+}
+
 
 def _clean_text(value: str) -> str:
     """Return text with collapsed whitespace for stable matching/hashing."""
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def _is_generic_cta_title(title: str) -> bool:
+    """Return True when anchor text looks like a generic CTA, not a role title."""
+    normalized = _clean_text(title).lower()
+    if not normalized:
+        return True
+
+    if normalized in GENERIC_CTA_TITLES:
+        return True
+
+    # Some sites duplicate CTA text in nested spans, e.g. "View Job View Job".
+    parts = normalized.split()
+    if (
+        len(parts) >= 2
+        and len(set(parts)) == 2
+        and parts.count("view") > 0
+        and parts.count("job") > 0
+        and parts.count("view") == parts.count("job")
+    ):
+        return True
+
+    return False
+
+
+def _derive_title_from_context(tag, fallback_title: str) -> str:
+    """Derive a better title for generic CTA anchors from nearby row/list context."""
+    if tag is None:
+        return fallback_title
+
+    container = tag.find_parent(["tr", "li", "article", "div"])
+    if container is None:
+        return fallback_title
+
+    # For table rows, prefer first non-empty cell text.
+    if container.name == "tr":
+        for cell in container.find_all(["td", "th"], recursive=False):
+            cell_text = _clean_text(cell.get_text(" ", strip=True))
+            if cell_text and not _is_generic_cta_title(cell_text):
+                return cell_text
+
+    # Fallback: first text fragment in container that isn't a generic CTA.
+    text = _clean_text(container.get_text(" ", strip=True))
+    if text:
+        fragments = [frag.strip() for frag in text.split("|") if frag.strip()]
+        for frag in fragments:
+            if not _is_generic_cta_title(frag):
+                return frag
+
+    return fallback_title
 
 
 def _is_probable_job_link(title: str, link: str, tag) -> bool:
@@ -86,7 +145,11 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
 
     for tag in soup.find_all("a", href=True):
         title = _clean_text(tag.get_text(separator=" ", strip=True))
-        if len(title) < 4 or len(title) > 250:
+
+        if _is_generic_cta_title(title):
+            title = _derive_title_from_context(tag, title)
+
+        if len(title) < 4 or len(title) > 250 or _is_generic_cta_title(title):
             continue
 
         href = _clean_text(tag["href"])

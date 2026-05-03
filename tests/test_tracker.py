@@ -125,6 +125,35 @@ class TestExtractJobsFromHtml:
         assert jobs[0]["title"] == "Senior Data Analyst (m/f/d) Berlin"
 
 
+    def test_extracts_pinpointhq_table_jobs_with_generic_cta_text(self):
+        html = """
+        <table>
+          <tr>
+            <td>Software Engineer</td>
+            <td>Oxford</td>
+            <td><a href="https://auroraer.pinpointhq.com/en/postings/abc">View Job</a></td>
+          </tr>
+          <tr>
+            <td>Energy Modelling Analyst</td>
+            <td>Vila Mariana</td>
+            <td><a href="https://auroraer.pinpointhq.com/en/postings/def">View Job View Job</a></td>
+          </tr>
+        </table>
+        """
+
+        jobs = _extract_jobs_from_html("aurora", html, "https://auroraer.com/careers/join-us")
+
+        assert len(jobs) == 2
+        titles = sorted(job["title"] for job in jobs)
+        links = sorted(job["link"] for job in jobs)
+
+        assert titles == ["Energy Modelling Analyst", "Software Engineer"]
+        assert links == [
+            "https://auroraer.pinpointhq.com/en/postings/abc",
+            "https://auroraer.pinpointhq.com/en/postings/def",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # scraper – fetch_jobs (async, using _html_override)
 # ---------------------------------------------------------------------------
