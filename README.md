@@ -1,4 +1,4 @@
-# DIY Website Tracker
+# JobTrack
 
 A lightweight Python automation tool that monitors company career pages daily and reports new job listings by comparing the current page state with the last recorded state.
 
