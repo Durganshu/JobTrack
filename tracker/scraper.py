@@ -310,30 +310,92 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
     all_by_link: dict[str, dict] = {}
 
     js_next = """
-    const re = /(load more|show more|more jobs|more results|mehr laden|weitere|anzeigen)/i;
-    let clicked = false;
-    
-    // 1. Try standard pagination "Next" buttons or ">"
-    const nextBtn = document.querySelector('a.next, button.next, [aria-label*="Next"], [aria-label*="next"], a:has-text("Next"), a:has-text("next"), a:has-text(">")');
-    if (nextBtn && nextBtn.offsetParent !== null) {
-        nextBtn.click();
-        clicked = true;
-    } else {
-        // 2. Fallback to "Load More"
-        const elements = Array.from(document.querySelectorAll('button, a'));
-        for (const el of elements) {
-            const text = (el.innerText || el.textContent || '').trim();
-            if (text && re.test(text) && el.offsetParent !== null) {
-                el.click();
-                clicked = true;
-                break;
+    (function() {
+        console.log("Starting pagination click script...");
+        const re = /(load more|show more|more jobs|more results|mehr laden|weitere|anzeigen)/i;
+        let clicked = false;
+        
+        function forceClick(el) {
+            if (!el) return false;
+            console.log("Force clicking element:", el.tagName, el.className, el.innerText);
+            el.click();
+            el.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+            el.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+            el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+            return true;
+        }
+
+        // 1. Try to find "Next" arrow based on typical sibling structure (like Aurora)
+        const activeBtn = document.querySelector('button[class*="active"], a[class*="active"], .active');
+        if (activeBtn) {
+            let next = activeBtn.nextElementSibling;
+            // Skip dots or separators if any
+            while (next && (next.textContent.trim() === '...' || next.offsetHeight === 0)) {
+                next = next.nextElementSibling;
+            }
+            if (next && (next.tagName === 'BUTTON' || next.tagName === 'A' || next.tagName === 'IMG')) {
+                console.log("Found sibling next element:", next.tagName);
+                if (forceClick(next)) clicked = true;
             }
         }
-    }
-    
-    // 3. Scroll down to trigger lazy loading if needed
-    window.scrollBy(0, document.body.scrollHeight);
-    return clicked;
+
+        // 2. Try common Next selectors
+        if (!clicked) {
+            const selectors = [
+                'a.next', 'button.next', 
+                '[aria-label*="Next" i]', '[aria-label*="next" i]',
+                'li.next a', 'li.next button',
+                '.pagination-next', '.next-page',
+                'button[class*="Pagination_page_number"] ~ img:last-of-type',
+                'div[class*="pagination"] img:last-of-type',
+                'div[class*="Pagination"] img:last-of-type',
+                'img[alt*="Next" i]', 'img[alt*="next" i]'
+            ];
+            
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                if (el && el.offsetParent !== null) {
+                    console.log("Clicking selector match:", sel);
+                    if (forceClick(el)) {
+                        clicked = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // 3. Text/Alt based search
+        if (!clicked) {
+            const elements = Array.from(document.querySelectorAll('button, a, span, img'));
+            const nextEl = elements.find(el => {
+                const text = el.textContent.trim();
+                const alt = el.getAttribute('alt') || '';
+                return (text.toLowerCase() === 'next' || text === '>' || text === '»' || alt.toLowerCase().includes('next')) && 
+                       el.offsetParent !== null;
+            });
+            if (nextEl) {
+                console.log("Clicking text/alt match:", nextEl.textContent || nextEl.getAttribute('alt'));
+                if (forceClick(nextEl)) clicked = true;
+            }
+        }
+        
+        // 4. Fallback to "Load More"
+        if (!clicked) {
+            const elements = Array.from(document.querySelectorAll('button, a'));
+            for (const el of elements) {
+                const text = (el.innerText || el.textContent || '').trim();
+                if (text && re.test(text) && el.offsetParent !== null) {
+                    if (forceClick(el)) {
+                        clicked = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        window.scrollBy(0, document.body.scrollHeight);
+        return clicked;
+    })();
     """
 
     browser_cfg = BrowserConfig(headless=True)
@@ -351,18 +413,22 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             for j in jobs:
                 all_by_link[j["link"]] = j
 
-        # Try up to 10 pages for pagination
-        for _ in range(10):
+        # Try up to 25 pages for pagination (Aurora has 20)
+        for p in range(25):
             next_config = CrawlerRunConfig(
                 session_id=session_id,
-                js_code=js_next,
+                # Use string concatenation instead of f-string to avoid brace interpolation issues
+                js_code="await (async () => { " + js_next + " await new Promise(r => setTimeout(r, 2500)); })();",
                 js_only=True,
                 cache_mode=CacheMode.BYPASS,
                 page_timeout=timeout_ms,
-                # Wait 2 seconds for DOM to update after click
-                wait_for="js:() => { return new Promise(resolve => setTimeout(resolve, 2000)); }"
+                capture_console_messages=True
             )
             result = await crawler.arun(url=url, config=next_config)
+            
+            if result.console_messages:
+                for msg in result.console_messages:
+                    print(f"[BROWSER CONSOLE] {msg}")
             
             if not result.html:
                 break
@@ -374,7 +440,7 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
                     all_by_link[j["link"]] = j
                     added_new = True
             
-            # If we didn't add any new jobs, assume we hit the end
+            # If no new jobs were found, we are done
             if not added_new:
                 break
 
