@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A lightweight tool to monitor company career pages and detect new job listings."
 requires-python = ">=3.9"
 dependencies = [
+    "crawl4ai",
     "playwright>=1.40.0",
     "beautifulsoup4>=4.12.0",
 ]

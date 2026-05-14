@@ -299,61 +299,88 @@ async def _fetch_jobs_typesense_if_available(
             await browser.close()
 
 
-async def _fetch_html_playwright(url: str, timeout_ms: int = 30_000) -> str:
+async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000) -> list[dict]:
     """
-    Use a headless Chromium browser via Playwright to load the page and
-    return the fully-rendered HTML.  Raises on any Playwright error so
-    callers can skip archive updates on fetch failures.
+    Use Crawl4AI to load the page, handle pagination/load-more buttons,
+    and extract jobs across multiple pages using the existing HTML heuristic parser.
     """
-    from playwright.async_api import async_playwright
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 
-    async def _expand_dynamic_results(page) -> None:
-        """Try to reveal lazy-loaded results by scrolling and clicking more."""
-        stable_rounds = 0
-        last_height = -1
+    session_id = f"session_{company}"
+    all_by_link: dict[str, dict] = {}
 
-        for _ in range(20):
-            clicked = await page.evaluate(
-                """
-                () => {
-                    const re = /(load more|show more|more jobs|more results|mehr laden|weitere|anzeigen)/i;
-                    let count = 0;
-                    const elements = Array.from(document.querySelectorAll('button, a'));
-                    for (const el of elements) {
-                        const text = (el.innerText || el.textContent || '').trim();
-                        if (text && re.test(text) && el.offsetParent !== null) {
-                            el.click();
-                            count += 1;
-                        }
-                    }
-                    return count;
-                }
-                """
+    js_next = """
+    const re = /(load more|show more|more jobs|more results|mehr laden|weitere|anzeigen)/i;
+    let clicked = false;
+    
+    // 1. Try standard pagination "Next" buttons or ">"
+    const nextBtn = document.querySelector('a.next, button.next, [aria-label*="Next"], [aria-label*="next"], a:has-text("Next"), a:has-text("next"), a:has-text(">")');
+    if (nextBtn && nextBtn.offsetParent !== null) {
+        nextBtn.click();
+        clicked = true;
+    } else {
+        // 2. Fallback to "Load More"
+        const elements = Array.from(document.querySelectorAll('button, a'));
+        for (const el of elements) {
+            const text = (el.innerText || el.textContent || '').trim();
+            if (text && re.test(text) && el.offsetParent !== null) {
+                el.click();
+                clicked = true;
+                break;
+            }
+        }
+    }
+    
+    // 3. Scroll down to trigger lazy loading if needed
+    window.scrollBy(0, document.body.scrollHeight);
+    return clicked;
+    """
+
+    browser_cfg = BrowserConfig(headless=True)
+    async with AsyncWebCrawler(config=browser_cfg) as crawler:
+        # Load initial page
+        config = CrawlerRunConfig(
+            session_id=session_id,
+            cache_mode=CacheMode.BYPASS,
+            page_timeout=timeout_ms,
+        )
+        result = await crawler.arun(url=url, config=config)
+        
+        if result.html:
+            jobs = _extract_jobs_from_html(company, result.html, url)
+            for j in jobs:
+                all_by_link[j["link"]] = j
+
+        # Try up to 10 pages for pagination
+        for _ in range(10):
+            next_config = CrawlerRunConfig(
+                session_id=session_id,
+                js_code=js_next,
+                js_only=True,
+                cache_mode=CacheMode.BYPASS,
+                page_timeout=timeout_ms,
+                # Wait 2 seconds for DOM to update after click
+                wait_for="js:() => { return new Promise(resolve => setTimeout(resolve, 2000)); }"
             )
-
-            await page.mouse.wheel(0, 4000)
-            await page.wait_for_timeout(700)
-            height = await page.evaluate("() => document.body.scrollHeight")
-
-            if height == last_height and clicked == 0:
-                stable_rounds += 1
-            else:
-                stable_rounds = 0
-            last_height = height
-
-            if stable_rounds >= 3:
+            result = await crawler.arun(url=url, config=next_config)
+            
+            if not result.html:
+                break
+                
+            jobs = _extract_jobs_from_html(company, result.html, url)
+            added_new = False
+            for j in jobs:
+                if j["link"] not in all_by_link:
+                    all_by_link[j["link"]] = j
+                    added_new = True
+            
+            # If we didn't add any new jobs, assume we hit the end
+            if not added_new:
                 break
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            await _expand_dynamic_results(page)
-            html = await page.content()
-        finally:
-            await browser.close()
-    return html
+        await crawler.crawler_strategy.kill_session(session_id)
+
+    return list(all_by_link.values())
 
 
 async def _fetch_jobs_from_iframe_boards(
@@ -438,18 +465,15 @@ async def fetch_jobs(
     """
     if _html_override is not None:
         html = _html_override
-    else:
-        jobs_from_api = await _fetch_jobs_typesense_if_available(company, url, timeout_ms)
-        if jobs_from_api:
-            return jobs_from_api
+        return _extract_jobs_from_html(company, html, url)
+        
+    jobs_from_api = await _fetch_jobs_typesense_if_available(company, url, timeout_ms)
+    if jobs_from_api:
+        return jobs_from_api
 
-        jobs_from_iframes = await _fetch_jobs_from_iframe_boards(company, url, timeout_ms)
-        if jobs_from_iframes:
-            return jobs_from_iframes
+    jobs_from_iframes = await _fetch_jobs_from_iframe_boards(company, url, timeout_ms)
+    if jobs_from_iframes:
+        return jobs_from_iframes
 
-        html = await _fetch_html_playwright(url, timeout_ms)
-
-    if not html:
-        return []
-
-    return _extract_jobs_from_html(company, html, url)
+    jobs_from_crawl4ai = await _fetch_jobs_crawl4ai(company, url, timeout_ms)
+    return jobs_from_crawl4ai
