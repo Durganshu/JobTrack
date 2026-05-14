@@ -3,6 +3,7 @@ Scraper module: fetches job listings from career pages using Playwright
 for JavaScript-rendered pages and BeautifulSoup4 for HTML parsing.
 """
 
+import asyncio
 import hashlib
 import json
 import math
@@ -84,12 +85,13 @@ def _derive_title_from_context(tag, fallback_title: str) -> str:
                 return cell_text
 
     # Fallback: first text fragment in container that isn't a generic CTA.
-    text = _clean_text(container.get_text(" ", strip=True))
+    text = container.get_text(separator="\n", strip=True)
     if text:
-        fragments = [frag.strip() for frag in text.split("|") if frag.strip()]
+        fragments = [frag.strip() for frag in text.split("\n") if frag.strip()]
         for frag in fragments:
-            if not _is_generic_cta_title(frag):
-                return frag
+            frag_clean = _clean_text(frag)
+            if not _is_generic_cta_title(frag_clean) and len(frag_clean) >= 4:
+                return frag_clean
 
     return fallback_title
 
@@ -145,19 +147,27 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
 
     for tag in soup.find_all("a", href=True):
         title = _clean_text(tag.get_text(separator=" ", strip=True))
+        if not title or _is_generic_cta_title(title):
+            # Try to find a title in child elements if the anchor itself is empty or generic
+            nested_title = tag.find(["h1", "h2", "h3", "h4", "h5", "strong", "b", "p"])
+            if nested_title and not _is_generic_cta_title(_clean_text(nested_title.get_text())):
+                title = _clean_text(nested_title.get_text())
+            else:
+                # Fallback to deriving from context
+                title = _derive_title_from_context(tag, title)
 
-        if _is_generic_cta_title(title):
-            title = _derive_title_from_context(tag, title)
-
-        if len(title) < 4 or len(title) > 250 or _is_generic_cta_title(title):
+        if len(title) < 4 or len(title) > 500 or _is_generic_cta_title(title):
             continue
 
         href = _clean_text(tag["href"])
-        if not href or href.startswith("#"):
+        # Allow any hash link that isn't just a bare '#'
+        if not href or href == "#":
             continue
 
         link = urljoin(base_url, href)
         if not _is_probable_job_link(title, link, tag):
+            # Log rejected links to help debug missing jobs (hidden behind debug flag if possible)
+            # print(f"DEBUG: Rejected link for {company}: {link} (Title: {title})")
             continue
 
         existing = by_link.get(link)
@@ -325,8 +335,24 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             return true;
         }
 
+        // 0. Try to find an "All" or "Alle" button first to bypass pagination
+        const allTerms = ['all', 'alle', 'show all', 'alle anzeigen'];
+        const allBtn = Array.from(document.querySelectorAll('button, a')).find(el => {
+            const text = el.textContent.trim().toLowerCase();
+            return allTerms.includes(text) && el.offsetParent !== null && (el.className.toLowerCase().includes('pagination') || el.parentElement.className.toLowerCase().includes('pagination'));
+        });
+        if (allBtn) {
+            console.log("Found 'All' button, clicking to bypass pagination:", allBtn.textContent);
+            if (forceClick(allBtn)) {
+                clicked = true;
+                // Return early so the scraper doesn't try to click "Next" immediately
+                window.scrollBy(0, document.body.scrollHeight);
+                return true;
+            }
+        }
+
         // 1. Try to find "Next" arrow based on typical sibling structure (like Aurora)
-        const activeBtn = document.querySelector('button[class*="active"], a[class*="active"], .active');
+        const activeBtn = document.querySelector('button[class*="active"], a[class*="active"], .active, [aria-current="page"]');
         if (activeBtn) {
             let next = activeBtn.nextElementSibling;
             // Skip dots or separators if any
@@ -339,17 +365,18 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             }
         }
 
-        // 2. Try common Next selectors
+        // 2. Try common Next selectors with multilingual support
         if (!clicked) {
             const selectors = [
                 'a.next', 'button.next', 
                 '[aria-label*="Next" i]', '[aria-label*="next" i]',
+                '[aria-label*="nächste" i]', '[aria-label*="weiter" i]', // German
                 'li.next a', 'li.next button',
                 '.pagination-next', '.next-page',
                 'button[class*="Pagination_page_number"] ~ img:last-of-type',
                 'div[class*="pagination"] img:last-of-type',
                 'div[class*="Pagination"] img:last-of-type',
-                'img[alt*="Next" i]', 'img[alt*="next" i]'
+                'img[alt*="Next" i]', 'img[alt*="next" i]', 'img[alt*="nächste" i]'
             ];
             
             for (const sel of selectors) {
@@ -364,13 +391,14 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             }
         }
         
-        // 3. Text/Alt based search
+        // 3. Text/Alt based search (Multilingual)
         if (!clicked) {
             const elements = Array.from(document.querySelectorAll('button, a, span, img'));
             const nextEl = elements.find(el => {
-                const text = el.textContent.trim();
-                const alt = el.getAttribute('alt') || '';
-                return (text.toLowerCase() === 'next' || text === '>' || text === '»' || alt.toLowerCase().includes('next')) && 
+                const text = el.textContent.trim().toLowerCase();
+                const alt = (el.getAttribute('alt') || '').toLowerCase();
+                const nextTerms = ['next', '>', '»', 'next page', 'nächste', 'weiter', 'vorwärts', 'right arrow'];
+                return (nextTerms.includes(text) || nextTerms.some(t => alt.includes(t))) && 
                        el.offsetParent !== null;
             });
             if (nextEl) {
@@ -405,6 +433,8 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             session_id=session_id,
             cache_mode=CacheMode.BYPASS,
             page_timeout=timeout_ms,
+            delay_before_return_html=2.0,
+            wait_until="networkidle"
         )
         result = await crawler.arun(url=url, config=config)
         
@@ -413,22 +443,31 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
             for j in jobs:
                 all_by_link[j["link"]] = j
 
-        # Try up to 25 pages for pagination (Aurora has 20)
+        # Try up to 25 pages for pagination
         for p in range(25):
+            # Capture current page indicator before clicking
+            js_capture = """
+            (function() {
+                const active = document.querySelector('button[class*="active"], a[class*="active"], .active, [aria-current="page"]');
+                const range = document.querySelector('[data-automation-id="jobFoundCount"], [class*="pagination"], .page-indicator');
+                window.lastPageIndicator = (active ? active.innerText : '') + (range ? range.innerText : '');
+                if (!window.lastPageIndicator) window.lastPageIndicator = document.body.innerText.length;
+                return window.lastPageIndicator;
+            })();
+            """
+            
             next_config = CrawlerRunConfig(
                 session_id=session_id,
-                # Use string concatenation instead of f-string to avoid brace interpolation issues
-                js_code="await (async () => { " + js_next + " await new Promise(r => setTimeout(r, 2500)); })();",
+                # Inject capture logic and track if a click happened
+                js_code="window.clickHappened = false; window.lastPageIndicator = (function() { const active = document.querySelector('button[class*=\"active\"], a[class*=\"active\"], .active, [aria-current=\"page\"]'); const range = document.querySelector('[data-automation-id=\"jobFoundCount\"], [class*=\"pagination\"], .page-indicator, .pagination-range'); const val = (active ? active.innerText : '') + (range ? range.innerText : '') + window.location.hash; return val || document.body.innerText.length; })(); window.clickHappened = " + js_next,
                 js_only=True,
                 cache_mode=CacheMode.BYPASS,
                 page_timeout=timeout_ms,
-                capture_console_messages=True
+                # ONLY wait if a click actually happened
+                wait_for="js:() => { if (!window.clickHappened) return true; const active = document.querySelector('button[class*=\"active\"], a[class*=\"active\"], .active, [aria-current=\"page\"]'); const range = document.querySelector('[data-automation-id=\"jobFoundCount\"], [class*=\"pagination\"], .page-indicator, .pagination-range'); const curr = (active ? active.innerText : '') + (range ? range.innerText : '') + window.location.hash; return (curr || document.body.innerText.length) !== window.lastPageIndicator; }",
+                wait_for_timeout=timeout_ms
             )
             result = await crawler.arun(url=url, config=next_config)
-            
-            if result.console_messages:
-                for msg in result.console_messages:
-                    print(f"[BROWSER CONSOLE] {msg}")
             
             if not result.html:
                 break
@@ -440,9 +479,19 @@ async def _fetch_jobs_crawl4ai(company: str, url: str, timeout_ms: int = 30_000)
                     all_by_link[j["link"]] = j
                     added_new = True
             
-            # If no new jobs were found, we are done
+            # If no new jobs were found, we might be at the end
             if not added_new:
-                break
+                # One last short sleep and check to handle extremely slow renders
+                await asyncio.sleep(2)
+                final_html = result.html
+                jobs = _extract_jobs_from_html(company, final_html, url)
+                for j in jobs:
+                    if j["link"] not in all_by_link:
+                        all_by_link[j["link"]] = j
+                        added_new = True
+                
+                if not added_new:
+                    break
 
         await crawler.crawler_strategy.kill_session(session_id)
 
@@ -465,7 +514,8 @@ async def _fetch_jobs_from_iframe_boards(
         try:
             page = await browser.new_page()
             await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            await page.wait_for_timeout(1200)
+            # Give iframes more time to load and bypass overlays
+            await page.wait_for_timeout(3000)
 
             all_by_link: dict[str, dict] = {}
 
