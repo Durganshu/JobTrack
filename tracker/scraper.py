@@ -70,10 +70,7 @@ def _is_generic_cta_title(title: str) -> bool:
 
 def _derive_title_from_context(tag, fallback_title: str) -> str:
     """Derive a better title for generic CTA anchors from nearby row/list context."""
-    if tag is None:
-        return fallback_title
-
-    container = tag.find_parent(["tr", "li", "article", "div"])
+    container = _find_job_container(tag)
     if container is None:
         return fallback_title
 
@@ -94,6 +91,46 @@ def _derive_title_from_context(tag, fallback_title: str) -> str:
                 return frag_clean
 
     return fallback_title
+
+
+def _find_job_container(tag):
+    """Return the closest container that likely represents one job listing."""
+    if tag is None:
+        return None
+    return tag.find_parent(["tr", "li", "article", "section", "div"])
+
+
+def _extract_description_from_context(tag, title: str) -> str:
+    """Extract a short description or metadata block from nearby listing context."""
+    container = _find_job_container(tag)
+    if container is None:
+        return ""
+
+    fragments: list[str] = []
+    seen: set[str] = set()
+
+    for fragment in container.stripped_strings:
+        clean = _clean_text(fragment)
+        if not clean:
+            continue
+
+        normalized = clean.lower()
+        if normalized == title.lower() or _is_generic_cta_title(clean):
+            continue
+
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        fragments.append(clean)
+
+    return " | ".join(fragments)
+
+
+def _prefer_new_job(existing: dict, candidate: dict) -> bool:
+    """Return True when *candidate* should replace *existing* for the same link."""
+    if len(candidate["title"]) != len(existing["title"]):
+        return len(candidate["title"]) > len(existing["title"])
+    return len(candidate.get("description", "")) > len(existing.get("description", ""))
 
 
 def _is_probable_job_link(title: str, link: str, tag) -> bool:
@@ -132,7 +169,7 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
     Parse raw HTML and extract job listings.
 
     Uses job-link heuristics on anchor tags and returns unique entries with
-    keys: title, link, hash.
+    keys: title, link, description, hash.
 
     Parameters
     ----------
@@ -170,15 +207,20 @@ def _extract_jobs_from_html(company: str, html: str, base_url: str) -> list[dict
             # print(f"DEBUG: Rejected link for {company}: {link} (Title: {title})")
             continue
 
-        existing = by_link.get(link)
-        if existing and len(existing["title"]) >= len(title):
-            continue
+        description = _extract_description_from_context(tag, title)
 
-        by_link[link] = {
+        job = {
             "title": title,
             "link": link,
+            "description": description,
             "hash": _compute_hash(company, title, link),
         }
+
+        existing = by_link.get(link)
+        if existing and not _prefer_new_job(existing, job):
+            continue
+
+        by_link[link] = job
 
     return list(by_link.values())
 
@@ -202,20 +244,47 @@ def _extract_jobs_from_typesense_payload(company: str, payload: dict) -> list[di
         doc = hit.get("document") or {}
         title = _clean_text(str(doc.get("title") or ""))
         link = _clean_text(str(doc.get("application_url") or ""))
+        description = _extract_description_from_typesense_document(doc)
         if len(title) < 4 or not link:
             continue
 
-        existing = by_link.get(link)
-        if existing and len(existing["title"]) >= len(title):
-            continue
-
-        by_link[link] = {
+        job = {
             "title": title,
             "link": link,
+            "description": description,
             "hash": _compute_hash(company, title, link),
         }
 
+        existing = by_link.get(link)
+        if existing and not _prefer_new_job(existing, job):
+            continue
+
+        by_link[link] = job
+
     return list(by_link.values())
+
+
+def _extract_description_from_typesense_document(doc: dict) -> str:
+    """Extract the best available plain-text description from a Typesense hit."""
+    for key in (
+        "description",
+        "short_description",
+        "summary",
+        "snippet",
+        "excerpt",
+        "job_description",
+        "content",
+    ):
+        value = doc.get(key)
+        if value is None:
+            continue
+
+        text = BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
+        clean = _clean_text(text)
+        if clean:
+            return clean
+
+    return ""
 
 
 async def _fetch_jobs_typesense_if_available(
