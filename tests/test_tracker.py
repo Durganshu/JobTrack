@@ -17,7 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tracker.database import DatabaseManager
 from tracker.reporter import print_report
-from tracker.scraper import _compute_hash, _extract_jobs_from_html, fetch_jobs
+from tracker.scraper import (
+    _compute_hash,
+    _extract_jobs_from_html,
+    _extract_jobs_from_typesense_payload,
+    fetch_jobs,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,7 @@ class TestExtractJobsFromHtml:
         for job in jobs:
             assert "hash" in job
             assert len(job["hash"]) == 64
+            assert "description" in job
 
     def test_empty_html_returns_empty(self):
         jobs = _extract_jobs_from_html("ACME", "", "https://acme.com")
@@ -152,6 +158,74 @@ class TestExtractJobsFromHtml:
             "https://auroraer.pinpointhq.com/en/postings/abc",
             "https://auroraer.pinpointhq.com/en/postings/def",
         ]
+        descriptions = {job["title"]: job["description"] for job in jobs}
+        assert descriptions == {
+            "Energy Modelling Analyst": "Vila Mariana",
+            "Software Engineer": "Oxford",
+        }
+
+    def test_extracts_description_from_job_card_context(self):
+        html = """
+        <article class="job-card">
+          <a href="/jobs/7">Backend Engineer</a>
+          <p>Build APIs for the tracker platform.</p>
+          <span>Remote in Germany</span>
+        </article>
+        """
+
+        jobs = _extract_jobs_from_html("ACME", html, "https://acme.com")
+
+        assert len(jobs) == 1
+        assert jobs[0]["description"] == "Build APIs for the tracker platform. | Remote in Germany"
+
+
+class TestExtractJobsFromTypesensePayload:
+    def test_extracts_description_when_available(self):
+        payload = {
+            "results": [
+                {
+                    "hits": [
+                        {
+                            "document": {
+                                "title": "Platform Engineer",
+                                "application_url": "https://acme.com/jobs/88",
+                                "description": "<p>Own the deployment pipeline.</p>",
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        jobs = _extract_jobs_from_typesense_payload("ACME", payload)
+
+        assert len(jobs) == 1
+        assert jobs[0]["description"] == "Own the deployment pipeline."
+
+    def test_falls_back_to_metadata_when_no_description_field(self):
+        payload = {
+            "results": [
+                {
+                    "hits": [
+                        {
+                            "document": {
+                                "title": "Administrator Linux Environments (w/m/d)",
+                                "application_url": "https://career.50hertz.com/jobs/1",
+                                "location": ["Berlin"],
+                                "department": ["IT / Digitalisation"],
+                                "schedule": ["full time"],
+                                "work_mode": [],
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        jobs = _extract_jobs_from_typesense_payload("50hertz", payload)
+
+        assert len(jobs) == 1
+        assert jobs[0]["description"] == "Berlin | IT / Digitalisation | full time"
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +240,7 @@ async def test_fetch_jobs_with_html_override():
     assert len(jobs) > 0
     for job in jobs:
         assert "title" in job
+        assert "description" in job
         assert "hash" in job
 
 
@@ -193,22 +268,24 @@ class TestDatabaseManager:
     def test_update_and_retrieve(self, temp_archive):
         db = DatabaseManager(temp_archive)
         jobs = [
-            {"title": "Engineer", "link": "https://x.com/1", "hash": "abc"},
-            {"title": "Analyst", "link": "https://x.com/2", "hash": "def"},
+            {"title": "Engineer", "link": "https://x.com/1", "description": "Backend role", "hash": "abc"},
+            {"title": "Analyst", "link": "https://x.com/2", "description": "Data team", "hash": "def"},
         ]
         db.update_company("ACME", jobs)
         archived = db.get_archived_jobs("ACME")
         assert "abc" in archived
         assert "def" in archived
+        assert archived["abc"]["description"] == "Backend role"
 
     def test_persists_to_disk(self, temp_archive):
         db = DatabaseManager(temp_archive)
-        jobs = [{"title": "Developer", "link": "", "hash": "xyz"}]
+        jobs = [{"title": "Developer", "link": "", "description": "Writes features", "hash": "xyz"}]
         db.update_company("Corp", jobs)
 
         # Re-load from disk
         db2 = DatabaseManager(temp_archive)
         assert "xyz" in db2.get_archived_jobs("Corp")
+        assert db2.get_archived_jobs("Corp")["xyz"]["description"] == "Writes features"
 
     def test_update_replaces_old_jobs(self, temp_archive):
         db = DatabaseManager(temp_archive)

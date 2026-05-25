@@ -4,7 +4,7 @@ Database module: manages persistence of job listings in jobs_archive.json.
 The archive has the structure:
 {
     "CompanyName": {
-        "<hash>": {"title": "...", "link": "...", "hash": "..."},
+        "<hash>": {"title": "...", "link": "...", "description": "...", "hash": "..."},
         ...
     },
     ...

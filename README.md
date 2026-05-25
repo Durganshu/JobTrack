@@ -107,7 +107,7 @@ python main.py >> tracker.log 2>&1
    - Generic CTA text such as `View Job` or `Apply` is resolved from nearby row/list context when possible.
    - Relative links are normalized to absolute URLs.
    - Duplicate links are collapsed, keeping the longest title.
-3. Each extracted entry is hashed as `SHA-256(company | title | link)`.
+3. Each extracted entry is hashed as `SHA-256(company | title | link)`. A `description` is extracted from nearby listing context (sibling cells, paragraphs, or span text within the same container) and stored alongside the title and link, but is intentionally excluded from the hash so that description updates do not create false "new job" events.
 4. The hashes are compared against those stored in `jobs_archive.json`:
     - **New jobs** → hashes in *current* but not in *archive*.
     - **Closed jobs** → hashes in *archive* but not in *current*.
