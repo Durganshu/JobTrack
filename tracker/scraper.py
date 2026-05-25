@@ -265,7 +265,12 @@ def _extract_jobs_from_typesense_payload(company: str, payload: dict) -> list[di
 
 
 def _extract_description_from_typesense_document(doc: dict) -> str:
-    """Extract the best available plain-text description from a Typesense hit."""
+    """Extract the best available plain-text description from a Typesense hit.
+
+    First tries known prose fields; falls back to composing a metadata string
+    from location, department, schedule, and similar attributes that the
+    my-job-shop Typesense schema exposes instead of a full description.
+    """
     for key in (
         "description",
         "short_description",
@@ -284,7 +289,25 @@ def _extract_description_from_typesense_document(doc: dict) -> str:
         if clean:
             return clean
 
-    return ""
+    # Fallback: compose metadata from structured fields common to my-job-shop.
+    parts: list[str] = []
+
+    def _first_or_str(v) -> str:
+        """Return first element of a list or the string itself."""
+        if isinstance(v, list):
+            return str(v[0]) if v else ""
+        return str(v) if v else ""
+
+    for key in ("sub_title", "location", "department", "schedule", "work_mode",
+                "contract_type", "career_level"):
+        raw = doc.get(key)
+        if raw is None:
+            continue
+        text = _clean_text(_first_or_str(raw))
+        if text:
+            parts.append(text)
+
+    return " | ".join(parts)
 
 
 async def _fetch_jobs_typesense_if_available(

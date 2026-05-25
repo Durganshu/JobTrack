@@ -51,11 +51,14 @@ def print_report(
             for job in new_jobs:
                 title = _truncate(job["title"])
                 link = job.get("link", "")
+                description = job.get("description", "")
                 if link:
                     print(f"    • {title}")
                     print(f"      {link}")
                 else:
                     print(f"    • {title}")
+                if description:
+                    print(f"      {_truncate(description, 120)}")
         else:
             print("  No new jobs.")
 

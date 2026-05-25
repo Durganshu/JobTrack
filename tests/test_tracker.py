@@ -202,6 +202,31 @@ class TestExtractJobsFromTypesensePayload:
         assert len(jobs) == 1
         assert jobs[0]["description"] == "Own the deployment pipeline."
 
+    def test_falls_back_to_metadata_when_no_description_field(self):
+        payload = {
+            "results": [
+                {
+                    "hits": [
+                        {
+                            "document": {
+                                "title": "Administrator Linux Environments (w/m/d)",
+                                "application_url": "https://career.50hertz.com/jobs/1",
+                                "location": ["Berlin"],
+                                "department": ["IT / Digitalisation"],
+                                "schedule": ["full time"],
+                                "work_mode": [],
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        jobs = _extract_jobs_from_typesense_payload("50hertz", payload)
+
+        assert len(jobs) == 1
+        assert jobs[0]["description"] == "Berlin | IT / Digitalisation | full time"
+
 
 # ---------------------------------------------------------------------------
 # scraper – fetch_jobs (async, using _html_override)
