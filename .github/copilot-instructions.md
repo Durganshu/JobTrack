@@ -2,7 +2,7 @@
 
 ## Environment and commands
 
-Use Python 3.9+ in a virtual environment.
+Use Python 3.10+ in a virtual environment.
 
 ```bash
 python3 -m venv .venv
